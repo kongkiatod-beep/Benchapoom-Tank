@@ -65,6 +65,24 @@ export function watchCatalog(cb) {
   });
 }
 
+// ---------- Counter กลาง (จองเลขเอกสารแบบ atomic กันชนกันแม้หลายแผนกกดพร้อมกัน) ----------
+// เก็บเลขรันนิ่งแยกตามชนิด+ปี พ.ศ. ใน config/counters เช่น { order_69: 12, prod_69: 5 }
+const countersRef = doc(db, "config", "counters");
+
+// floor = เลขสูงสุดของปีนี้ที่มีอยู่แล้ว (รวมที่กรอกมือ) เพื่อไม่ให้ counter จองเลขไปชน
+export async function allocateDocNo(prefix, baseName, floor = 0) {
+  const yy = String(new Date().getFullYear() + 543).slice(-2);
+  const field = `${baseName}_${yy}`;
+  let seq;
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(countersRef);
+    const cur = snap.exists() ? Number(snap.data()[field] || 0) : 0;
+    seq = Math.max(cur, Number(floor) || 0) + 1;
+    tx.set(countersRef, { [field]: seq }, { merge: true });
+  });
+  return `${prefix}${String(seq).padStart(3, "0")}/${yy}`;
+}
+
 // ---------- Inventory (สต๊อก ระดับ รุ่น+ขนาด+สี) ----------
 export async function upsertInventory({ model, size, color, stock, maxStock }) {
   const id = invKey(model, size, color);
@@ -79,19 +97,46 @@ export async function deleteInventory(id) {
   await deleteDoc(doc(db, "inventory", id));
 }
 
-// ปรับสต๊อก (delta บวก=เพิ่ม, ลบ=ลด) แบบ transaction กันชนกัน
-export async function adjustStock(model, size, color, delta) {
-  const id = invKey(model, size, color);
-  const ref = doc(db, "inventory", id);
+// รวมรายการที่เป็น SKU เดียวกัน (กันรายการซ้ำใน 1 ใบ ตัดสต๊อกพลาด)
+function aggregateItems(items) {
+  const m = new Map();
+  for (const it of items || []) {
+    const k = invKey(it.model, it.size, it.color);
+    const e = m.get(k) || { ref: k, model: it.model, size: it.size, color: it.color, qty: 0 };
+    e.qty += Number(it.qty || 0);
+    m.set(k, e);
+  }
+  return [...m.values()];
+}
+
+// ปรับสต๊อกหลายรายการ + อัปเดตสถานะเอกสาร ภายใน transaction เดียว (atomic)
+// sign = -1 ตัดสต๊อก (จัดส่ง), +1 เพิ่มสต๊อก (ผลิต). ถ้า sign<0 จะตรวจของพอ ไม่งั้นยกเลิกทั้งใบ
+async function commitStock(docRef, items, sign, statusPatch) {
+  const lines = aggregateItems(items);
   await runTransaction(db, async (tx) => {
-    const snap = await tx.get(ref);
-    const cur = snap.exists() ? Number(snap.data().stock || 0) : 0;
-    const next = cur + Number(delta);
-    if (snap.exists()) {
-      tx.update(ref, { stock: next, updatedAt: serverTimestamp() });
-    } else {
-      tx.set(ref, { model, size, color, stock: next, maxStock: 0, updatedAt: serverTimestamp() });
+    // อ่านทั้งหมดก่อน (ข้อกำหนดของ Firestore transaction)
+    const snaps = [];
+    for (const l of lines) {
+      const ref = doc(db, "inventory", l.ref);
+      snaps.push({ l, ref, snap: await tx.get(ref) });
     }
+    // ตรวจสต๊อกเมื่อเป็นการตัด (กันติดลบ) — ถ้าไม่พอ throw เพื่อยกเลิกทั้ง transaction
+    if (sign < 0) {
+      const short = [];
+      for (const s of snaps) {
+        const cur = s.snap.exists() ? Number(s.snap.data().stock || 0) : 0;
+        if (cur < s.l.qty) short.push(`${s.l.model} ${s.l.size}ล. ${s.l.color} (มี ${cur} ต้องการ ${s.l.qty})`);
+      }
+      if (short.length) throw new Error("สต๊อกไม่พอ:\n" + short.join("\n"));
+    }
+    // เขียนทั้งหมด
+    for (const s of snaps) {
+      const cur = s.snap.exists() ? Number(s.snap.data().stock || 0) : 0;
+      const next = cur + sign * s.l.qty;
+      if (s.snap.exists()) tx.update(s.ref, { stock: next, updatedAt: serverTimestamp() });
+      else tx.set(s.ref, { model: s.l.model, size: s.l.size, color: s.l.color, stock: next, maxStock: 0, updatedAt: serverTimestamp() });
+    }
+    tx.update(docRef, statusPatch);
   });
 }
 
@@ -120,12 +165,11 @@ export async function deleteOrder(id) {
   await deleteDoc(doc(db, "orders", id));
 }
 
-// จัดส่งออเดอร์ -> ตัดสต๊อกตามรายการ + เปลี่ยนสถานะ
+// จัดส่งออเดอร์ -> ตัดสต๊อก + เปลี่ยนสถานะ แบบ atomic (ของไม่พอจะยกเลิกทั้งใบ)
 export async function deliverOrder(order) {
-  for (const it of order.items) {
-    await adjustStock(it.model, it.size, it.color, -Number(it.qty));
-  }
-  await updateOrder(order.id, { status: "delivered", deliveredAt: serverTimestamp() });
+  await commitStock(doc(db, "orders", order.id), order.items, -1, {
+    status: "delivered", deliveredAt: serverTimestamp(),
+  });
 }
 
 export function watchOrders(cb) {
@@ -154,12 +198,11 @@ export async function deleteProduction(id) {
   await deleteDoc(doc(db, "production", id));
 }
 
-// ผลิตเสร็จ -> เพิ่มสต๊อกตามรายการ + เปลี่ยนสถานะ
+// ผลิตเสร็จ -> เพิ่มสต๊อก + เปลี่ยนสถานะ แบบ atomic
 export async function completeProduction(prod) {
-  for (const it of prod.items) {
-    await adjustStock(it.model, it.size, it.color, +Number(it.qty));
-  }
-  await updateProduction(prod.id, { status: "done", doneAt: serverTimestamp() });
+  await commitStock(doc(db, "production", prod.id), prod.items, +1, {
+    status: "done", doneAt: serverTimestamp(),
+  });
 }
 
 export function watchProduction(cb) {

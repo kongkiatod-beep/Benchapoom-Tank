@@ -232,6 +232,7 @@ table.matrix td.cell { min-width:74px; height:46px; }
 }
 .modal-back.show { display:flex; animation:fade .2s ease; }
 .modal {
+  display:block; position:relative;
   background:var(--surface); border-radius:18px; width:100%; max-width:680px;
   max-height:90vh; overflow:auto; box-shadow:0 30px 70px -20px rgba(15,23,42,.5);
 }
@@ -262,6 +263,15 @@ table.matrix td.cell { min-width:74px; height:46px; }
 @keyframes spin { to{transform:rotate(360deg)} }
 
 .section-title { font-size:1.05rem; font-weight:800; margin:24px 0 12px; display:flex; align-items:center; gap:8px; }
+
+/* ---------- Print ---------- */
+#printArea { display: none; }
+@media print {
+  body * { visibility: hidden; }
+  #printArea, #printArea * { visibility: visible; }
+  #printArea { display: block; position: absolute; left: 0; top: 0; width: 100%; }
+  @page { margin: 14mm; }
+}
 
 /* ---------- Responsive ---------- */
 @media (max-width: 900px) {

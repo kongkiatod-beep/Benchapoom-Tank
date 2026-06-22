@@ -1,7 +1,7 @@
 // ===== Main App =====
 import {
   DEFAULT_CATALOG, COLOR_HEX, invKey,
-  ensureCatalog, saveCatalog, watchCatalog,
+  ensureCatalog, saveCatalog, watchCatalog, allocateDocNo,
   upsertInventory, deleteInventory, watchInventory,
   addOrder, updateOrder, deleteOrder, deliverOrder, watchOrders,
   addProduction, updateProduction, deleteProduction, completeProduction, watchProduction,
@@ -23,8 +23,19 @@ const state = {
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const fmt = (n) => Number(n || 0).toLocaleString("th-TH");
-const todayStr = () => new Date().toISOString().slice(0, 10);
-const tomorrowStr = () => { const d = new Date(); d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10); };
+const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const todayStr = () => ymd(new Date());                                  // วันที่ตามเวลาท้องถิ่น (ไม่ใช่ UTC)
+const tomorrowStr = () => { const d = new Date(); d.setDate(d.getDate() + 1); return ymd(d); };
+const beYY = () => String(new Date().getFullYear() + 543).slice(-2);
+// เลขสูงสุดของปี พ.ศ. ปัจจุบันที่มีอยู่แล้ว (ใช้เป็น floor ให้ counter + เป็นตัวเลขพรีวิว)
+const floorSeq = (prefix, list, field) => {
+  const re = new RegExp(`^${prefix}0*(\\d+)/${beYY()}$`);
+  let max = 0;
+  for (const x of list) { const m = (x[field] || "").match(re); if (m) max = Math.max(max, Number(m[1])); }
+  return max;
+};
+// เลขพรีวิว (ค่าที่คาดว่าจะได้) — ตอนบันทึกจริงจะจองจาก counter กลางแบบ atomic
+const previewDocNo = (prefix, list, field) => `${prefix}${String(floorSeq(prefix, list, field) + 1).padStart(3, "0")}/${beYY()}`;
 const thDate = (s) => { if (!s) return "-"; const d = new Date(s); return d.toLocaleDateString("th-TH", { day: "2-digit", month: "short", year: "numeric" }); };
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const swatch = (c) => `<span class="swatch" style="background:${COLOR_HEX[c] || "#ccc"}"></span>`;
@@ -49,6 +60,118 @@ function openModal(title, bodyHtml, footHtml) {
 function closeModal() { $("#modalBack").classList.remove("show"); }
 $("#modalBack").addEventListener("click", (e) => { if (e.target.id === "modalBack") closeModal(); });
 
+/* ---------- Print documents (ใบสั่งผลิต / ใบส่งของ) ---------- */
+const COMPANY = {
+  name: "บริษัท เบญจภูมิ ทราฟฟิค จำกัด",
+  nameEn: "BENCHAPOOM TRAFFIC CO., LTD.",
+  addr: "30/8 หมู่ 4 ตำบลบางใหญ่ อำเภอบางใหญ่ จังหวัดนนทบุรี 11140",
+  tel: "โทร. 0-2403-6565, 0-2403-6559, 097-263-9365",
+  email: "benchapoomtraffic_ns@hotmail.com",
+};
+const TD = "border:1px solid #000;padding:6px 8px;";
+function signBlock(a, b) {
+  return `<div style="display:flex;justify-content:space-around;margin-top:54px;font-size:.85rem;text-align:center;">
+    <div>.......................................<br>( ${a} )<br>วันที่ ......./......./.......</div>
+    <div>.......................................<br>( ${b} )<br>วันที่ ......./......./.......</div></div>`;
+}
+function printDoc(inner) {
+  $("#printArea").innerHTML = `
+    <div style="font-family:'Noto Sans Thai',sans-serif;color:#000;">
+      <div style="display:flex;align-items:center;gap:14px;border-bottom:2px solid #000;padding-bottom:10px;margin-bottom:14px;">
+        <div style="width:56px;height:56px;border:2px solid #1d4ed8;border-radius:10px;display:flex;align-items:center;justify-content:center;font-weight:800;color:#1d4ed8;font-size:1.3rem;">BP</div>
+        <div style="line-height:1.35;">
+          <div style="font-size:1.1rem;font-weight:800;">${COMPANY.name}</div>
+          <div style="font-size:.85rem;font-weight:700;letter-spacing:.5px;">${COMPANY.nameEn}</div>
+          <div style="font-size:.7rem;">${COMPANY.addr}</div>
+          <div style="font-size:.7rem;">${COMPANY.tel} · ${COMPANY.email}</div>
+        </div>
+      </div>${inner}
+    </div>`;
+  window.print();
+}
+function printProduction(p) {
+  const items = p.items || [];
+  const body = items.map((it, i) => `<tr>
+    <td style="${TD}text-align:center;">${i + 1}</td>
+    <td style="${TD}">${esc(it.color)}</td>
+    <td style="${TD}">${esc(it.model)}</td>
+    <td style="${TD}text-align:center;">${fmt(it.size)} ล.</td>
+    <td style="${TD}text-align:center;font-weight:700;">${fmt(it.qty)}</td>
+    <td style="${TD}text-align:center;">${esc(p.lot || "")}</td>
+    <td style="${TD}"></td></tr>`).join("");
+  const pad = Math.max(0, 8 - items.length);
+  const blanks = Array.from({ length: pad }).map(() => `<tr>${`<td style="${TD}height:28px;"></td>`.repeat(7)}</tr>`).join("");
+  printDoc(`
+    <h2 style="text-align:center;font-size:1.2rem;margin:0;">ใบสั่งผลิตสินค้า</h2>
+    <div style="display:flex;justify-content:space-between;font-size:.88rem;margin:12px 0;">
+      <div>เลขที่ <b>${esc(p.prodNo || "-")}</b></div><div>วันที่ <b>${thDate(p.date)}</b></div></div>
+    <table style="width:100%;border-collapse:collapse;font-size:.82rem;">
+      <thead><tr style="background:#eee;">
+        <th style="${TD}">ลำดับ</th><th style="${TD}">ชนิดสี</th><th style="${TD}">รุ่น</th>
+        <th style="${TD}">ขนาดบรรจุ</th><th style="${TD}">จำนวนที่สั่งผลิต</th><th style="${TD}">LOT.</th><th style="${TD}">หมายเหตุ</th>
+      </tr></thead><tbody>${body}${blanks}</tbody></table>
+    ${p.note ? `<div style="margin-top:10px;font-size:.85rem;">หมายเหตุ: ${esc(p.note)}</div>` : ""}
+    ${signBlock("ผู้สั่งผลิต", "ผู้รับใบสั่งผลิต")}`);
+}
+function printDelivery(o) {
+  const items = o.items || [];
+  const total = items.reduce((s, i) => s + Number(i.qty || 0), 0);
+  const body = items.map((it, i) => `<tr>
+    <td style="${TD}text-align:center;">${i + 1}</td>
+    <td style="${TD}">${esc(it.model)} ${fmt(it.size)} ล. — สี${esc(it.color)}</td>
+    <td style="${TD}text-align:center;font-weight:700;">${fmt(it.qty)} ใบ</td></tr>`).join("");
+  const pad = Math.max(0, 8 - items.length);
+  const blanks = Array.from({ length: pad }).map(() => `<tr>${`<td style="${TD}height:28px;"></td>`.repeat(3)}</tr>`).join("");
+  printDoc(`
+    <h2 style="text-align:center;font-size:1.2rem;margin:0;">ใบส่งของ / ใบจัดส่งสินค้า</h2>
+    <div style="font-size:.88rem;margin:12px 0;line-height:1.9;">
+      <div style="display:flex;justify-content:space-between;"><div>เลขที่ <b>${esc(o.orderNo || "-")}</b></div><div>วันที่ส่ง <b>${thDate(o.deliveryDate)}</b></div></div>
+      <div>ลูกค้า <b>${esc(o.customer || "")}</b>${o.contact ? ` · ผู้ติดต่อ ${esc(o.contact)}` : ""}</div></div>
+    <table style="width:100%;border-collapse:collapse;font-size:.85rem;">
+      <thead><tr style="background:#eee;"><th style="${TD}width:60px;">ลำดับ</th><th style="${TD}">รายการสินค้า</th><th style="${TD}width:110px;">จำนวน</th></tr></thead>
+      <tbody>${body}${blanks}<tr><td style="${TD}" colspan="2"><b>รวมทั้งสิ้น</b></td><td style="${TD}text-align:center;font-weight:700;">${fmt(total)} ใบ</td></tr></tbody></table>
+    ${o.note ? `<div style="margin-top:10px;font-size:.85rem;">หมายเหตุ: ${esc(o.note)}</div>` : ""}
+    ${signBlock("ผู้ส่งสินค้า", "ผู้รับสินค้า")}`);
+}
+
+/* ---------- Export Excel (SheetJS) ---------- */
+function exportXlsx(sheets, filename) {
+  if (!window.XLSX) return toast("โหลดไลบรารี Excel ไม่สำเร็จ — ลองรีเฟรชหน้า", "err");
+  const wb = XLSX.utils.book_new();
+  for (const s of sheets) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(s.rows), s.name);
+  XLSX.writeFile(wb, filename);
+  toast("ดาวน์โหลด " + filename + " แล้ว", "ok");
+}
+function exportOrders() {
+  const rows = [["เลขที่", "วันที่สั่ง", "ลูกค้า", "ผู้ติดต่อ", "รุ่น", "ขนาด(ล.)", "สี", "จำนวน", "กำหนดส่ง", "สถานะ", "หมายเหตุ"]];
+  for (const o of state.orders) {
+    const st = o.status === "delivered" ? "จัดส่งแล้ว" : "รอจัดส่ง";
+    const its = (o.items || []).length ? o.items : [{}];
+    for (const it of its) rows.push([o.orderNo || "", o.date || "", o.customer || "", o.contact || "", it.model || "", it.size || "", it.color || "", it.qty || "", o.deliveryDate || "", st, o.note || ""]);
+  }
+  exportXlsx([{ name: "ออเดอร์", rows }], `orders_${todayStr()}.xlsx`);
+}
+function exportProduction() {
+  const rows = [["เลขที่", "วันที่", "LOT", "รุ่น", "ขนาด(ล.)", "สี", "จำนวนที่สั่งผลิต", "สถานะ", "หมายเหตุ"]];
+  for (const p of state.production) {
+    const st = p.status === "done" ? "ผลิตเสร็จ" : "กำลังผลิต";
+    const its = (p.items || []).length ? p.items : [{}];
+    for (const it of its) rows.push([p.prodNo || "", p.date || "", p.lot || "", it.model || "", it.size || "", it.color || "", it.qty || "", st, p.note || ""]);
+  }
+  exportXlsx([{ name: "ใบสั่งผลิต", rows }], `production_${todayStr()}.xlsx`);
+}
+function exportStock() {
+  const rows = [["รุ่น", "ขนาด(ล.)", "สี", "สต๊อกคงเหลือ", "max stock", "สถานะ"]];
+  const items = [...state.inventory.values()].sort((a, b) => String(a.model).localeCompare(b.model) || a.size - b.size);
+  for (const i of items) {
+    const max = Number(i.maxStock || 0), s = Number(i.stock || 0);
+    let st = "ปกติ"; if (max > 0) { const r = s / max; st = r <= 0.25 ? "ต่ำ-ต้องผลิต" : r <= 0.5 ? "ใกล้หมด" : "ปกติ"; }
+    rows.push([i.model, i.size, i.color, s, max, st]);
+  }
+  if (items.length === 0) rows.push(["(ยังไม่มีข้อมูลสต๊อก)", "", "", "", "", ""]);
+  exportXlsx([{ name: "สต๊อกคงเหลือ", rows }], `stock_${todayStr()}.xlsx`);
+}
+
 /* ---------- Navigation ---------- */
 const PAGE_META = {
   dashboard: ["Dashboard", "ภาพรวมออเดอร์ สต๊อก และการผลิตวันนี้"],
@@ -66,7 +189,7 @@ function nav(page) {
   $("#pageSub").textContent = s;
   $("#sidebar").classList.remove("open");
   $("#backdrop").classList.remove("show");
-  if (page === "catalog") renderCatalog();
+  renderActive(); // วาดเฉพาะหน้าที่เพิ่งเปิด
 }
 $("#nav").addEventListener("click", (e) => { const it = e.target.closest(".nav-item"); if (it) nav(it.dataset.page); });
 $("#menuBtn").onclick = () => { $("#sidebar").classList.toggle("open"); $("#backdrop").classList.toggle("show"); };
@@ -138,16 +261,66 @@ function renderDashboard() {
   const acts = [];
   state.orders.slice(0, 6).forEach((o) => acts.push({ t: o.createdAt, icon: "📞", txt: `รับออเดอร์ <b>${esc(o.customer)}</b>`, tag: o.status }));
   state.production.slice(0, 6).forEach((p) => acts.push({ t: p.createdAt, icon: "🏭", txt: `ใบสั่งผลิต <b>${esc(p.prodNo || p.lot || "")}</b>`, tag: p.status }));
-  acts.sort((a, b) => (b.t?.seconds || 0) - (a.t?.seconds || 0));
+  // pending serverTimestamp ยัง null ชั่วครู่ -> ถือว่าใหม่สุด (Infinity) ให้เด้งขึ้นบน
+  acts.sort((a, b) => (b.t?.seconds ?? Infinity) - (a.t?.seconds ?? Infinity));
   $("#recentActivity").innerHTML = acts.length ? `
     <table class="tbl"><tbody>${acts.slice(0, 8).map((a) => `<tr>
       <td style="width:40px">${a.icon}</td><td>${a.txt}</td>
       <td style="text-align:right">${statusPill(a.tag)}</td></tr>`).join("")}</tbody></table>` : empty("🕒", "ยังไม่มีความเคลื่อนไหว");
 
-  // nav badges
-  setBadge("#nav-orders", pendingOrders.length);
-  setBadge("#nav-delivery", todayDel.length);
-  setBadge("#nav-production", activeProd.length);
+  renderMonthlyChart();
+}
+
+// สถิติรายเดือน 6 เดือนล่าสุด: ยอดผลิต (ใบสั่งผลิตที่เสร็จแล้ว) vs ยอดจัดส่ง (ออเดอร์ที่ส่งแล้ว)
+function monthlyStats() {
+  const now = new Date();
+  const months = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    months.push({
+      key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`,
+      label: d.toLocaleDateString("th-TH", { month: "short" }) + " " + String(d.getFullYear() + 543).slice(-2),
+    });
+  }
+  const prod = {}, ship = {};
+  const sumQty = (items) => (items || []).reduce((s, i) => s + Number(i.qty || 0), 0);
+  for (const p of state.production) if (p.status === "done") { const k = (p.date || "").slice(0, 7); prod[k] = (prod[k] || 0) + sumQty(p.items); }
+  for (const o of state.orders) if (o.status === "delivered") { const k = (o.deliveryDate || "").slice(0, 7); ship[k] = (ship[k] || 0) + sumQty(o.items); }
+  return { labels: months.map((m) => m.label), prod: months.map((m) => prod[m.key] || 0), ship: months.map((m) => ship[m.key] || 0) };
+}
+
+let _monthlyChart = null;
+function renderMonthlyChart() {
+  const cv = $("#monthlyChart");
+  if (!cv || !window.Chart) return; // ไลบรารียังโหลดไม่เสร็จ -> รอ render รอบถัดไป
+  const s = monthlyStats();
+  if (_monthlyChart) _monthlyChart.destroy();
+  _monthlyChart = new Chart(cv, {
+    type: "bar",
+    data: {
+      labels: s.labels,
+      datasets: [
+        { label: "ยอดผลิต", data: s.prod, backgroundColor: "#0ea5e9", borderRadius: 6, maxBarThickness: 38 },
+        { label: "ยอดจัดส่ง", data: s.ship, backgroundColor: "#16a34a", borderRadius: 6, maxBarThickness: 38 },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: "top", labels: { usePointStyle: true, boxWidth: 8, font: { family: "Noto Sans Thai" } } } },
+      scales: {
+        y: { beginAtZero: true, ticks: { precision: 0 }, grid: { color: "#eef2f7" } },
+        x: { grid: { display: false } },
+      },
+    },
+  });
+}
+
+// อัปเดต badge ข้างเมนู (เรียกทุก snapshot โดยไม่ต้อง render หน้า Dashboard ทั้งหน้า)
+function updateBadges() {
+  const today = todayStr();
+  setBadge("#nav-orders", state.orders.filter((o) => o.status === "pending").length);
+  setBadge("#nav-delivery", state.orders.filter((o) => o.status === "pending" && o.deliveryDate <= today).length);
+  setBadge("#nav-production", state.production.filter((p) => p.status === "pending").length);
 }
 const kpi = (cls, ico, val, lbl) => `<div class="kpi ${cls}"><div class="ico">${ico}</div><div class="val">${val}</div><div class="lbl">${lbl}</div></div>`;
 const empty = (i, t) => `<div class="empty-state"><div class="e-ico">${i}</div>${t}</div>`;
@@ -228,6 +401,7 @@ function renderOrders() {
       <td>${statusPill(o.status)}</td>
       <td style="text-align:right">
         ${o.status === "pending" ? `<button class="btn btn-ok btn-sm" data-deliver="${o.id}">✓ ส่ง</button>` : ""}
+        <button class="btn btn-light btn-sm" data-print-deliv="${o.id}" title="พิมพ์ใบส่งของ">🖨️</button>
         <button class="btn btn-ghost btn-sm" data-edit-order="${o.id}">✏️</button>
         <button class="btn btn-ghost btn-sm" data-del-order="${o.id}">🗑️</button>
       </td>
@@ -236,10 +410,10 @@ function renderOrders() {
 
 function orderModal(existing) {
   const o = existing || {};
-  const nextNo = existing ? o.orderNo : "T" + String(state.orders.length + 1).padStart(3, "0") + "/" + (new Date().getFullYear() + 543 - 2500);
+  const preview = existing ? o.orderNo : previewDocNo("T", state.orders, "orderNo");
   openModal(existing ? "แก้ไขออเดอร์" : "📞 รับออเดอร์ใหม่", `
     <div class="form-row">
-      <div class="field"><label>เลขที่ใบสั่งซื้อ</label><input id="oNo" value="${esc(nextNo)}"></div>
+      <div class="field"><label>เลขที่ใบสั่งซื้อ <span class="muted" style="font-weight:400;font-size:.72rem">(ปล่อยไว้ = จองอัตโนมัติ)</span></label><input id="oNo" value="${esc(preview)}"></div>
       <div class="field"><label>วันที่สั่ง</label><input type="date" id="oDate" value="${o.date || todayStr()}"></div>
       <div class="field"><label>กำหนดส่งมอบ</label><input type="date" id="oDeliv" value="${o.deliveryDate || tomorrowStr()}"></div>
     </div>
@@ -258,15 +432,19 @@ function orderModal(existing) {
     const customer = $("#oCust").value.trim();
     if (!customer) return toast("กรอกชื่อลูกค้า", "err");
     if (!items.length) return toast("เพิ่มรายการสินค้าอย่างน้อย 1 รายการ", "err");
-    const data = {
-      orderNo: $("#oNo").value.trim(), date: $("#oDate").value, deliveryDate: $("#oDeliv").value,
-      customer, contact: $("#oContact").value.trim(), items, note: $("#oNote").value.trim(),
-    };
+    const btn = $("#saveOrder"); btn.disabled = true;
     try {
+      let orderNo = $("#oNo").value.trim();
+      // ใบใหม่ที่ผู้ใช้ไม่ได้แก้เลขเอง -> จองเลขจาก counter กลางแบบ atomic (กันชนกัน)
+      if (!existing && orderNo === preview) orderNo = await allocateDocNo("T", "order", floorSeq("T", state.orders, "orderNo"));
+      const data = {
+        orderNo, date: $("#oDate").value, deliveryDate: $("#oDeliv").value,
+        customer, contact: $("#oContact").value.trim(), items, note: $("#oNote").value.trim(),
+      };
       if (existing) await updateOrder(existing.id, data);
       else await addOrder(data);
       closeModal(); toast("บันทึกออเดอร์แล้ว", "ok");
-    } catch (e) { toast("บันทึกไม่สำเร็จ: " + e.message, "err"); }
+    } catch (e) { btn.disabled = false; toast("บันทึกไม่สำเร็จ: " + e.message, "err"); }
   };
 }
 
@@ -292,7 +470,7 @@ function renderDelivery() {
         <td><b>${esc(o.customer)}</b><br><span class="muted" style="font-size:.76rem">${esc(o.orderNo || "")}</span></td>
         <td style="white-space:normal;max-width:320px;line-height:1.8">${checks}</td>
         <td></td>
-        <td style="text-align:right"><button class="btn btn-ok btn-sm" data-deliver="${o.id}">🚚 ยืนยันส่ง</button></td>
+        <td style="text-align:right"><button class="btn btn-light btn-sm" data-print-deliv="${o.id}" title="พิมพ์ใบส่งของ">🖨️</button> <button class="btn btn-ok btn-sm" data-deliver="${o.id}">🚚 ยืนยันส่ง</button></td>
       </tr>`;
     }).join("")}</tbody></table>` : empty("✅", "ไม่มีรายการค้างส่ง");
 }
@@ -322,7 +500,7 @@ function renderStockMatrix() {
         let cls = "";
         if (max > 0) { const r = stock / max; if (r <= 0.25) cls = "cell-low"; else if (r <= 0.5) cls = "cell-warn"; }
         const empty = !inv || (stock === 0 && max === 0);
-        html += `<td class="cell"><div class="cell-inner ${cls} ${empty ? "empty" : ""}" data-cell="${esc(model)}|${size}|${esc(color)}">
+        html += `<td class="cell"><div class="cell-inner ${cls} ${empty ? "empty" : ""}" data-cell="1" data-model="${esc(model)}" data-size="${size}" data-color="${esc(color)}">
           <span class="s">${empty ? "+" : fmt(stock)}</span>${max > 0 ? `<span class="m">/${fmt(max)}</span>` : ""}</div></td>`;
       }
       html += `</tr>`;
@@ -369,16 +547,17 @@ function renderProduction() {
       <td>${statusPill(p.status)}</td>
       <td style="text-align:right">
         ${p.status === "pending" ? `<button class="btn btn-ok btn-sm" data-complete="${p.id}">✓ ผลิตเสร็จ</button>` : ""}
+        <button class="btn btn-light btn-sm" data-print-prod="${p.id}" title="พิมพ์ใบสั่งผลิต">🖨️</button>
         <button class="btn btn-ghost btn-sm" data-del-prod="${p.id}">🗑️</button>
       </td>
     </tr>`).join("")}</tbody></table>` : empty("🏭", "ยังไม่มีใบสั่งผลิต");
 }
 
 function prodModal(prefillItems) {
-  const nextNo = "P" + String(state.production.length + 1).padStart(3, "0") + "/" + (new Date().getFullYear() + 543 - 2500);
+  const preview = previewDocNo("P", state.production, "prodNo");
   openModal("🏭 เปิดใบสั่งผลิต", `
     <div class="form-row">
-      <div class="field"><label>เลขที่ใบสั่งผลิต</label><input id="pNo" value="${nextNo}"></div>
+      <div class="field"><label>เลขที่ใบสั่งผลิต <span class="muted" style="font-weight:400;font-size:.72rem">(ปล่อยไว้ = จองอัตโนมัติ)</span></label><input id="pNo" value="${preview}"></div>
       <div class="field"><label>วันที่</label><input type="date" id="pDate" value="${todayStr()}"></div>
       <div class="field"><label>LOT.</label><input id="pLot" placeholder="เช่น H008/26"></div>
     </div>
@@ -391,10 +570,13 @@ function prodModal(prefillItems) {
   $("#savePeod").onclick = async () => {
     const items = collectItems($("#prodItems"));
     if (!items.length) return toast("เพิ่มรายการอย่างน้อย 1 รายการ", "err");
+    const btn = $("#savePeod"); btn.disabled = true;
     try {
-      await addProduction({ prodNo: $("#pNo").value.trim(), date: $("#pDate").value, lot: $("#pLot").value.trim(), items, note: $("#pNote").value.trim() });
+      let prodNo = $("#pNo").value.trim();
+      if (prodNo === preview) prodNo = await allocateDocNo("P", "prod", floorSeq("P", state.production, "prodNo"));
+      await addProduction({ prodNo, date: $("#pDate").value, lot: $("#pLot").value.trim(), items, note: $("#pNote").value.trim() });
       closeModal(); toast("เปิดใบสั่งผลิตแล้ว", "ok");
-    } catch (e) { toast("ผิดพลาด: " + e.message, "err"); }
+    } catch (e) { btn.disabled = false; toast("ผิดพลาด: " + e.message, "err"); }
   };
 }
 
@@ -449,16 +631,18 @@ function renderCatalog() {
 
 /* ---------- Global event delegation ---------- */
 document.addEventListener("click", (e) => {
-  const t = e.target.closest("[data-deliver],[data-complete],[data-edit-order],[data-del-order],[data-del-prod],[data-cell],[data-del-model]");
+  const t = e.target.closest("[data-deliver],[data-complete],[data-edit-order],[data-del-order],[data-del-prod],[data-cell],[data-del-model],[data-print-prod],[data-print-deliv]");
   if (!t) return;
-  if (t.dataset.deliver) doDeliver(t.dataset.deliver);
+  if (t.dataset.printProd) { const p = state.production.find((x) => x.id === t.dataset.printProd); if (p) printProduction(p); }
+  else if (t.dataset.printDeliv) { const o = state.orders.find((x) => x.id === t.dataset.printDeliv); if (o) printDelivery(o); }
+  else if (t.dataset.deliver) doDeliver(t.dataset.deliver);
   else if (t.dataset.complete) doComplete(t.dataset.complete);
   else if (t.dataset.editOrder) orderModal(state.orders.find((o) => o.id === t.dataset.editOrder));
   else if (t.dataset.delOrder) { if (confirm("ลบออเดอร์นี้?")) deleteOrder(t.dataset.delOrder).then(() => toast("ลบแล้ว", "ok")); }
   else if (t.dataset.delProd) { if (confirm("ลบใบสั่งผลิตนี้?")) deleteProduction(t.dataset.delProd).then(() => toast("ลบแล้ว", "ok")); }
-  else if (t.dataset.cell) { const [m, s, c] = t.dataset.cell.split("|"); cellModal(m, s, c); }
+  else if (t.dataset.cell) { cellModal(t.dataset.model, t.dataset.size, t.dataset.color); }
   else if (t.dataset.delModel) {
-    if (confirm(`ลบรุ่น ${t.dataset.delModel}?`)) { delete state.catalog.models[t.dataset.delModel]; saveCatalog(state.catalog).then(() => toast("ลบรุ่นแล้ว", "ok")); }
+    if (confirm(`ลบรุ่น ${t.dataset.delModel}?`)) { delete state.catalog.models[t.dataset.delModel]; saveCatalog(state.catalog).then(() => { renderCatalog(); toast("ลบรุ่นแล้ว", "ok"); }); }
   }
 });
 
@@ -485,6 +669,9 @@ document.addEventListener("click", async (e) => {
 $("#btnNewOrder").onclick = () => orderModal();
 $("#btnNewProd").onclick = () => prodModal();
 $("#btnAutoProd").onclick = autoProd;
+$("#btnExportOrders").onclick = exportOrders;
+$("#btnExportProd").onclick = exportProduction;
+$("#btnExportStock").onclick = exportStock;
 $("#btnAddModel").onclick = () => {
   const name = prompt("ชื่อรุ่นใหม่:");
   if (!name) return;
@@ -497,14 +684,22 @@ $("#delFilter").addEventListener("click", (e) => { if (e.target.dataset.f) { sta
 $("#prodFilter").addEventListener("click", (e) => { if (e.target.dataset.f) { state.prodFilter = e.target.dataset.f; segActive("#prodFilter", e.target); renderProduction(); } });
 function segActive(sel, btn) { $$(`${sel} button`).forEach((b) => b.classList.toggle("active", b === btn)); }
 
-/* ---------- Render orchestrator ---------- */
-function renderAll() {
-  renderDashboard();
-  renderOrders();
-  renderDelivery();
-  renderStockMatrix();
-  renderProduction();
-  if ($("#page-catalog").classList.contains("active")) renderCatalog();
+/* ---------- Render orchestrator ----------
+   วาดเฉพาะหน้าที่เปิดอยู่ + badge เพื่อเลี่ยงการ rebuild ทุกหน้า (รวม matrix ใหญ่) ทุก snapshot */
+function renderActive() {
+  updateBadges();
+  const active = ($(".page.active") || {}).id;
+  switch (active) {
+    case "page-dashboard": return renderDashboard();
+    case "page-orders": return renderOrders();
+    case "page-delivery": return renderDelivery();
+    case "page-stock": return renderStockMatrix();
+    case "page-production": return renderProduction();
+    case "page-catalog":
+      // อย่าวาดทับขณะผู้ใช้กำลังพิมพ์ในฟอร์มตั้งค่า (กันค่าที่พิมพ์ค้างหาย)
+      if (!(document.activeElement && document.activeElement.closest("#page-catalog"))) renderCatalog();
+      return;
+  }
 }
 
 /* ---------- Boot ---------- */
@@ -517,9 +712,9 @@ $("#todayChip").textContent = new Date().toLocaleDateString("th-TH", { weekday: 
     toast("เชื่อมต่อ Firebase ไม่ได้: " + e.message, "err");
     console.error(e);
   }
-  watchCatalog((c) => { state.catalog = c; renderAll(); });
-  watchInventory((m) => { state.inventory = m; renderAll(); });
-  watchOrders((a) => { state.orders = a; renderAll(); });
-  watchProduction((a) => { state.production = a; renderAll(); });
-  renderAll();
+  watchCatalog((c) => { state.catalog = c; renderActive(); });
+  watchInventory((m) => { state.inventory = m; renderActive(); });
+  watchOrders((a) => { state.orders = a; renderActive(); });
+  watchProduction((a) => { state.production = a; renderActive(); });
+  renderActive();
 })();
