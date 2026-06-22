@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BENCHAPOOM Tank | ระบบจัดการออเดอร์ & การผลิตถังน้ำ</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💧</text></svg>" />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link rel="stylesheet" href="assets/css/style.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- ===== Sidebar ===== -->
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="logo">💧</div>
+        <div class="title">
+          <b>Benchapoom Tank</b>
+          <span>ระบบจัดการการผลิตถังน้ำ</span>
+        </div>
+      </div>
+      <nav class="nav" id="nav">
+        <div class="nav-section">ภาพรวม</div>
+        <div class="nav-item active" data-page="dashboard"><span class="ic">📊</span> Dashboard</div>
+        <div class="nav-section">แผนกงาน</div>
+        <div class="nav-item" data-page="orders"><span class="ic">📞</span> รับออเดอร์ <span class="badge-dot" id="nav-orders"></span></div>
+        <div class="nav-item" data-page="delivery"><span class="ic">🚚</span> จัดส่ง <span class="badge-dot" id="nav-delivery"></span></div>
+        <div class="nav-item" data-page="stock"><span class="ic">📦</span> สต๊อกคงเหลือ</div>
+        <div class="nav-item" data-page="production"><span class="ic">🏭</span> สั่งผลิต <span class="badge-dot" id="nav-production"></span></div>
+        <div class="nav-section">ตั้งค่า</div>
+        <div class="nav-item" data-page="catalog"><span class="ic">⚙️</span> รุ่น / สี / max</div>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="live"><span class="dot"></span> เชื่อมต่อ Firebase แบบ Realtime</div>
+        <div style="margin-top:6px;opacity:.7">FM-06 · Benchapoom Traffic Co.,Ltd</div>
+      </div>
+    </aside>
+    <div class="backdrop" id="backdrop"></div>
+
+    <!-- ===== Main ===== -->
+    <div class="main">
+      <header class="topbar">
+        <button class="btn btn-light menu-btn" id="menuBtn">☰</button>
+        <div>
+          <h1 id="pageTitle">Dashboard</h1>
+          <div class="sub" id="pageSub">ภาพรวมออเดอร์ สต๊อก และการผลิตวันนี้</div>
+        </div>
+        <div class="spacer"></div>
+        <div class="date-chip">📅 <span id="todayChip"></span></div>
+      </header>
+
+      <main class="content">
+        <!-- ===== Dashboard ===== -->
+        <section class="page active" id="page-dashboard">
+          <div class="grid kpis" id="kpis"></div>
+          <div class="grid" style="grid-template-columns: 1.4fr 1fr;">
+            <div class="card">
+              <div class="card-h"><h3>⚠️ รายการต้องสั่งผลิต (สต๊อกต่ำกว่า max)</h3><div class="spacer"></div><span class="sub">เรียงตามความเร่งด่วน</span></div>
+              <div class="card-b" style="padding:0"><div class="tbl-wrap" id="lowStockList"></div></div>
+            </div>
+            <div class="card">
+              <div class="card-h"><h3>📅 คิวจัดส่งวันนี้</h3></div>
+              <div class="card-b" style="padding:0"><div class="tbl-wrap" id="todayDeliveries"></div></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-h"><h3>🕒 ความเคลื่อนไหวล่าสุด</h3></div>
+            <div class="card-b" style="padding:0"><div class="tbl-wrap" id="recentActivity"></div></div>
+          </div>
+        </section>
+
+        <!-- ===== Orders ===== -->
+        <section class="page" id="page-orders">
+          <div class="toolbar">
+            <button class="btn btn-primary" id="btnNewOrder">➕ รับออเดอร์ใหม่</button>
+            <div class="seg" id="orderFilter">
+              <button class="active" data-f="all">ทั้งหมด</button>
+              <button data-f="pending">รอจัดส่ง</button>
+              <button data-f="delivered">จัดส่งแล้ว</button>
+            </div>
+            <div class="spacer" style="flex:1"></div>
+          </div>
+          <div class="card">
+            <div class="card-h"><h3>📞 รายการสั่งซื้อสินค้าทางโทรศัพท์</h3><div class="spacer"></div><span class="sub" id="orderCount"></span></div>
+            <div class="card-b" style="padding:0"><div class="tbl-wrap" id="ordersTable"></div></div>
+          </div>
+        </section>
+
+        <!-- ===== Delivery ===== -->
+        <section class="page" id="page-delivery">
+          <div class="toolbar">
+            <div class="seg" id="delFilter">
+              <button class="active" data-f="today">ส่งวันนี้</button>
+              <button data-f="pending">ค้างส่งทั้งหมด</button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-h"><h3>🚚 คิวจัดส่ง — ยืนยันส่งเพื่อตัดสต๊อก</h3><div class="spacer"></div><span class="sub" id="delCount"></span></div>
+            <div class="card-b" style="padding:0"><div class="tbl-wrap" id="deliveryTable"></div></div>
+          </div>
+        </section>
+
+        <!-- ===== Stock ===== -->
+        <section class="page" id="page-stock">
+          <div class="toolbar">
+            <div class="legend">
+              <span><i style="background:#fff1f2;border:1px solid #fecaca"></i> ต่ำ (ต้องผลิต)</span>
+              <span><i style="background:#fffbeb;border:1px solid #fde68a"></i> ใกล้หมด</span>
+              <span><i style="background:#fff;border:1px solid var(--line)"></i> ปกติ</span>
+            </div>
+            <div class="spacer" style="flex:1"></div>
+            <span class="muted" style="font-size:.8rem">คลิกที่ช่องเพื่อแก้สต๊อก / max</span>
+          </div>
+          <div class="card">
+            <div class="card-h"><h3>📦 ตารางสต๊อกคงเหลือ (รุ่น × ขนาด × สี)</h3><div class="spacer"></div><span class="sub">หน่วย: ใบ · ตัวเลขล่าง = max</span></div>
+            <div class="card-b"><div class="matrix-wrap" id="stockMatrix"></div></div>
+          </div>
+        </section>
+
+        <!-- ===== Production ===== -->
+        <section class="page" id="page-production">
+          <div class="toolbar">
+            <button class="btn btn-primary" id="btnNewProd">➕ เปิดใบสั่งผลิต</button>
+            <button class="btn btn-light" id="btnAutoProd">✨ สร้างจากสต๊อกต่ำอัตโนมัติ</button>
+            <div class="spacer" style="flex:1"></div>
+            <div class="seg" id="prodFilter">
+              <button class="active" data-f="all">ทั้งหมด</button>
+              <button data-f="pending">กำลังผลิต</button>
+              <button data-f="done">ผลิตเสร็จ</button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-h"><h3>🏭 ใบสั่งผลิตสินค้า</h3><div class="spacer"></div><span class="sub" id="prodCount"></span></div>
+            <div class="card-b" style="padding:0"><div class="tbl-wrap" id="productionTable"></div></div>
+          </div>
+        </section>
+
+        <!-- ===== Catalog / Settings ===== -->
+        <section class="page" id="page-catalog">
+          <div class="card">
+            <div class="card-h"><h3>⚙️ รุ่นสินค้า & ขนาดความจุ (ลิตร)</h3><div class="spacer"></div><button class="btn btn-light btn-sm" id="btnAddModel">➕ เพิ่มรุ่น</button></div>
+            <div class="card-b" id="modelsEditor"></div>
+          </div>
+          <div class="card">
+            <div class="card-h"><h3>🎨 สีที่ผลิต</h3></div>
+            <div class="card-b" id="colorsEditor"></div>
+          </div>
+          <div class="card">
+            <div class="card-h"><h3>🎯 กำหนด max stock (ขีดบน) ต่อรายการ</h3><div class="spacer"></div><span class="sub">ระบบจะเตือนเมื่อต่ำกว่านี้</span></div>
+            <div class="card-b" style="padding:0"><div class="tbl-wrap" id="maxEditor"></div></div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- ===== Modal ===== -->
+  <div class="modal-back" id="modalBack">
+    <div class="modal" id="modalBox"></div>
+  </div>
+  <div class="toast-wrap" id="toastWrap"></div>
+
+  <script type="module" src="assets/js/app.js"></script>
+</body>
+</html>
